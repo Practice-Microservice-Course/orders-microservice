@@ -10,6 +10,8 @@ import { CreateOrderDto, OrderPaginationDto } from './dto';
 import { ClientProxy, RpcException } from '@nestjs/microservices';
 import { firstValueFrom } from 'rxjs';
 import { NATS_SERVICE } from 'src/config/services';
+import { OrderWithProducts } from './interfaces/order-with-products.interface';
+import { PaidOrderDto } from 'src/dto';
 
 @Injectable()
 export class OrdersService extends PrismaClient implements OnModuleInit {
@@ -167,5 +169,57 @@ export class OrdersService extends PrismaClient implements OnModuleInit {
       where: { id },
       data: { status },
     });
+  }
+
+  async createPaymentSession(order: OrderWithProducts) {
+    const paymentSession = await firstValueFrom(
+      this.client.send('create.payment.session', {
+        orderId: order.id,
+        currency: 'usd',
+        items: order.OrderItem.map((orderItem) => ({
+          name: orderItem.name,
+          quantity: orderItem.quantity,
+          price: orderItem.price,
+        })),
+      }),
+    );
+
+    return paymentSession;
+  }
+
+  async paidOrder(paidOrderDto: PaidOrderDto) {
+    const { orderId, stripePaymentId, receipUrl } = paidOrderDto;
+
+    this.logger.log('Order Paid');
+    this.logger.log(paidOrderDto);
+
+    const order = await this.order.findUnique({
+      where: { id: orderId },
+    });
+
+    if (!order) {
+      throw new RpcException({
+        status: HttpStatus.NOT_FOUND,
+        message: `Order with id ${orderId} not found`,
+      });
+    }
+
+    const orderUpdated = await this.order.update({
+      where: { id: orderId },
+      data: {
+        status: 'PAID',
+        paidAt: new Date(),
+        stripeChargeID: stripePaymentId,
+
+        // Relation
+        OrderReceipt: {
+          create: {
+            receiptUrl: receipUrl,
+          },
+        },
+      },
+    });
+
+    return orderUpdated;
   }
 }
